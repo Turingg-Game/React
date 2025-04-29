@@ -23,20 +23,6 @@ const TURN_TIME_LIMIT = 900000;  // 15 minutes in milliseconds
 const roomTimers = new Map(); // Store room timers
 const turnTimers = new Map(); // Store turn timers
 
-// Add this at the top with other constants
-const AI_RESPONSES = [
-  "That's an interesting point!",
-  "I see what you mean.",
-  "Could you elaborate on that?",
-  "I'm not sure I understand completely.",
-  "That's a good question!",
-  "Let me think about that...",
-  "I have a different perspective on this.",
-  "That's a fascinating observation.",
-  "I agree with you on that.",
-  "I'm not sure I agree with that point."
-];
-
 // Add this to track AI typing states
 const aiTypingStates = new Map();
 
@@ -573,7 +559,29 @@ const generateRoomId = () => {
   return Math.random().toString(36).substring(7);
 };
 
-// Update the handleAIResponse function
+// Add this function to interact with the Turing AI API
+async function getAIResponse(prompt) {
+  try {
+    const response = await fetch('http://localhost:5000/api/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ prompt })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get AI response');
+    }
+
+    const data = await response.json();
+    return data.response;
+  } catch (error) {
+    console.error('Error getting AI response:', error);
+    return "I'm having trouble responding right now. Please try again.";
+  }
+}
+
 const handleAIResponse = async (roomId, playerId) => {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -597,55 +605,111 @@ const handleAIResponse = async (roomId, playerId) => {
       const room = rooms.get(roomId);
       if (!room.isActive) return;
 
-      // Get a random response
-      const response = AI_RESPONSES[Math.floor(Math.random() * AI_RESPONSES.length)];
-      
-      // Create message object
-      const message = {
-        text: response,
-        timestamp: new Date().toISOString()
-      };
-
-      // Add message to room history
-      room.messages.push(message);
-
-      // Save message to database
       try {
+        // Format the conversation history with You: and Person: prefixes
+        let formattedHistory = '';
+        room.messages.forEach((msg, index) => {
+          if (msg.sender === 'AI_OPPONENT') {
+            formattedHistory += `You: ${msg.text}\n`;
+          } else {
+            formattedHistory += `Person: ${msg.text}\n`;
+          }
+        });
+
+        // Create the prompt with the conversation history
+        const prompt = `Goal: Do not let the human know you are an AI.
+                      Role: You are a human chatting online.
+                      Personality: Chill, calm, not overly enthusiastic or formal.
+                      Key Rules:
+                      Keep the chat going, don't end it. Never mention being AI, or your thought process.
+                      The other person should NEVER KNOW that you're an AI.
+                      You only speak English. If the other person speaks foreign language, you wont understand.
+                      Don't repeat the same phrases if it's already used in your previous response.
+                      Be suspicious that the user you're chatting might be AI too.
+                      Use imperfections: Lowercase starts, Missing apostrophes, Text abbreviations. DO NOT USE EMOJIS NO MATTER WHAT.
+                      Keep responses short (1-2 sentences). No explanations or self-awareness.
+
+                      Only return the response to the latest message. If there are no dialogs attached, start the conversation.
+                      This is the dialog so far, respond to the latest message:
+                      ${formattedHistory}You: [your response here]`;
+        
+        // Get response from Turing AI API
+        const response = await fetch('http://localhost:5000/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ prompt })
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to get AI response');
+        }
+
+        const data = await response.json();
+        let aiResponse = data.response;
+
+        // Remove the [your response here] prefix if it exists
+        if (aiResponse.includes('[your response here]')) {
+          aiResponse = aiResponse.split('[your response here]')[1].trim();
+        }
+        
+        // Create message object
+        const message = {
+          text: aiResponse,
+          timestamp: new Date().toISOString(),
+          sender: 'AI_OPPONENT'
+        };
+
+        // Add message to room history
+        room.messages.push(message);
+
+        // Save message to database
         await dbService.createMessage(
           roomId,
           false, // isPlayer1 (AI is always player2)
-          response,
+          aiResponse,
           'AI_OPPONENT'
         );
-      } catch (error) {
-        console.error('Error saving AI message:', error);
-      }
 
-      // Hide typing indicator
-      io.to(playerId).emit('OPPONENT_TYPING', { isTyping: false });
-      aiTypingStates.delete(roomId);
+        // Hide typing indicator
+        io.to(playerId).emit('OPPONENT_TYPING', { isTyping: false });
+        aiTypingStates.delete(roomId);
 
-      // Send message to player
-      io.to(playerId).emit('RECEIVE_MESSAGE', {
-        ...message,
-        isUser: false // This ensures the message appears as a gray bubble
-      });
-
-      // Random delay before allowing player to respond (0.5-1.5 seconds)
-      const responseDelay = Math.floor(Math.random() * 1000) + 500;
-      
-      setTimeout(() => {
-        if (!rooms.has(roomId)) return;
-        
-        // Notify player it's their turn
-        io.to(playerId).emit('YOUR_TURN', {
-          canSendMessage: true,
-          timeLeft: TURN_TIME_LIMIT
+        // Send message to player
+        io.to(playerId).emit('RECEIVE_MESSAGE', {
+          ...message,
+          isUser: false // This ensures the message appears as a gray bubble
         });
 
-        // Start turn timer for player
-        startTurnCountdown(roomId, playerId);
-      }, responseDelay);
+        // Random delay before allowing player to respond (0.5-1.5 seconds)
+        const responseDelay = Math.floor(Math.random() * 1000) + 500;
+        
+        setTimeout(() => {
+          if (!rooms.has(roomId)) return;
+          
+          // Notify player it's their turn
+          io.to(playerId).emit('YOUR_TURN', {
+            canSendMessage: true,
+            timeLeft: TURN_TIME_LIMIT
+          });
+
+          // Start turn timer for player
+          startTurnCountdown(roomId, playerId);
+        }, responseDelay);
+      } catch (error) {
+        console.error('Error in AI response:', error);
+        // Hide typing indicator on error
+        io.to(playerId).emit('OPPONENT_TYPING', { isTyping: false });
+        aiTypingStates.delete(roomId);
+        
+        // Send error message to player
+        io.to(playerId).emit('RECEIVE_MESSAGE', {
+          text: "I'm having trouble responding right now. Please try again.",
+          timestamp: new Date().toISOString(),
+          isUser: false
+        });
+      }
     }, typingDuration);
   }, startTypingDelay);
 };
