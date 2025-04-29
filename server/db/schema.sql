@@ -1,6 +1,15 @@
 -- Drop existing tables if they exist
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS conversations;
+DROP TABLE IF EXISTS ai_personalities;
+
+-- Create AI personalities table first (since it's referenced)
+CREATE TABLE IF NOT EXISTS ai_personalities (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(50) NOT NULL,
+  description TEXT,
+  prompt_template TEXT NOT NULL
+);
 
 -- Create conversations table
 CREATE TABLE IF NOT EXISTS conversations (
@@ -13,7 +22,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     player1_guess BOOLEAN, -- player1's guess: false for AI, true for human
     player2_guess BOOLEAN, -- player2's guess: false for AI, true for human
     player1_guess_correct BOOLEAN, -- whether player1's guess was correct
-    player2_guess_correct BOOLEAN  -- whether player2's guess was correct
+    player2_guess_correct BOOLEAN,  -- whether player2's guess was correct
+    ai_personality_id INTEGER REFERENCES ai_personalities(id)
 );
 
 -- Create messages table
@@ -24,4 +34,4 @@ CREATE TABLE IF NOT EXISTS messages (
     sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     content TEXT NOT NULL,
     sender_id TEXT NOT NULL -- socket ID of the sender
-); 
+);

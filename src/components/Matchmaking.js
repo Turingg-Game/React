@@ -83,14 +83,16 @@ function Matchmaking() {
     const handleMatchFound = (data) => {
       console.log('Match found:', data);
       setStatus('Match found! Starting game...');
-      // Navigate to game with match data
-      navigate('/game', { 
-        state: { 
-          roomId: data.roomId,
-          isAI: data.isAI,
-          isFirstTurn: data.isFirstTurn
-        }
-      });
+      
+      const matchData = {
+        roomId: data.roomId,
+        isAI: data.isAI,
+        isFirstTurn: data.isFirstTurn
+      };
+      
+      setTimeout(() => {
+        navigate('/game', { state: matchData });
+      }, 1500);
     };
 
     const handleError = (error) => {

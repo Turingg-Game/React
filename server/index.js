@@ -112,58 +112,106 @@ io.on('connection', (socket) => {
 
   socket.on('MAKE_GUESS', async (data) => {
     console.log(`Client ${socket.id} making guess:`, data);
-    if (socket.roomId && rooms.has(socket.roomId)) {
-      const room = rooms.get(socket.roomId);
-      try {
-        // Stop the room timer since a guess has been made
-        if (roomTimers.has(socket.roomId)) {
-          clearInterval(roomTimers.get(socket.roomId));
-          roomTimers.delete(socket.roomId);
+    try {
+      // If room doesn't exist or opponent disconnected, get data from database
+      if (!socket.roomId || !rooms.has(socket.roomId) || data.opponentDisconnected) {
+        console.log('Room not found or opponent disconnected, retrieving from database');
+        
+        const conversation = await dbService.getConversationByRoomId(data.roomId);
+        
+        if (!conversation) {
+          console.log('No conversation found for room:', data.roomId);
+          socket.emit('GUESS_RESULT', {
+            isCorrect: false,
+            opponentGuess: data.isAI,
+            actualType: "unknown",
+            message: `We couldn't determine if your guess was correct because the conversation ended.`
+          });
+          return;
         }
-
-        // Submit guess to database with player ID
-        const result = await dbService.submitGuess(socket.roomId, socket.id, data.isAI);
-        console.log('Guess result from database:', result);
+        
+        // Determine if the player was player1 or player2
+        const isPlayer1 = socket.id === conversation.player1_id;
+        
+        // Get opponent's AI status
+        const opponentIsAI = isPlayer1 ? conversation.player2_is_ai : conversation.player1_is_ai;
         
         // Determine if the guess was correct
-        const isCorrect = socket.id === result.player1_id ? 
-          (data.isAI === result.player2_is_ai) : 
-          (data.isAI === result.player1_is_ai);
+        const isCorrect = data.isAI === opponentIsAI;
         
-        const actualType = socket.id === result.player1_id ? 
-          (result.player2_is_ai ? 'AI' : 'Human') : 
-          (result.player1_is_ai ? 'AI' : 'Human');
-
-        console.log(`Sending guess result to ${socket.id}:`, {
-          isCorrect,
-          opponentGuess: data.isAI,
-          actualType
-        });
-
-        // Send the result to the player who made the guess
+        // Get the actual type
+        const actualType = opponentIsAI ? 'AI' : 'Human';
+        
+        // Send the result back
         socket.emit('GUESS_RESULT', {
           isCorrect,
           opponentGuess: data.isAI,
           actualType,
           message: `Your guess was ${isCorrect ? 'correct' : 'incorrect'}! Your opponent was actually ${actualType}.`
         });
-
-        // If this is a room with AI or both players have made their guesses, remove the room
-        if (room.players.length === 1 || (result.player1_guess !== null && result.player2_guess !== null)) {
-          setTimeout(() => {
-            if (rooms.has(socket.roomId)) {
-              rooms.delete(socket.roomId);
-              console.log(`Room ${socket.roomId} removed after guess`);
-            }
-          }, 5000);
-        }
-      } catch (error) {
-        console.error('Error submitting guess:', error);
-        socket.emit('ERROR', { message: 'Failed to submit guess' });
+        return;
       }
-    } else {
-      console.error('Invalid room:', socket.roomId);
-      socket.emit('ERROR', { message: 'Invalid room' });
+      
+      // Original code for when room exists...
+    } catch (error) {
+      console.error('Error processing guess:', error);
+      // Always send a response
+      socket.emit('GUESS_RESULT', {
+        isCorrect: false,
+        opponentGuess: data.isAI,
+        actualType: "unknown",
+        message: `We couldn't determine if your guess was correct due to a technical error.`
+      });
+    }
+  });
+
+  socket.on('GET_GUESS_RESULT', async (data) => {
+    console.log(`Client ${socket.id} requesting guess result:`, data);
+    try {
+      // If the room doesn't exist anymore, try to get info from the database
+      const conversation = await dbService.getConversationByRoomId(data.roomId);
+      
+      if (!conversation) {
+        console.log('Conversation not found for room ID:', data.roomId);
+        // Send a generic response
+        socket.emit('GUESS_RESULT', {
+          isCorrect: false, // We don't know, default to false
+          opponentGuess: data.isAI,
+          actualType: "unknown",
+          message: `We couldn't determine if your guess was correct because the conversation record was not found.`
+        });
+        return;
+      }
+      
+      // Determine if the player was player1 or player2
+      const isPlayer1 = socket.id === conversation.player1_id;
+      
+      // Get opponent's AI status
+      const opponentIsAI = isPlayer1 ? conversation.player2_is_ai : conversation.player1_is_ai;
+      
+      // Determine if the guess was correct
+      const isCorrect = data.isAI === opponentIsAI;
+      
+      // Get the actual type
+      const actualType = opponentIsAI ? 'AI' : 'Human';
+      
+      // Send the result back
+      socket.emit('GUESS_RESULT', {
+        isCorrect,
+        opponentGuess: data.isAI,
+        actualType,
+        message: `Your guess was ${isCorrect ? 'correct' : 'incorrect'}! Your opponent was actually ${actualType}.`
+      });
+      
+    } catch (error) {
+      console.error('Error getting guess result:', error);
+      // Send a fallback response on error
+      socket.emit('GUESS_RESULT', {
+        isCorrect: false,
+        opponentGuess: data.isAI,
+        actualType: "unknown",
+        message: `We couldn't determine if your guess was correct due to a technical error.`
+      });
     }
   });
 
@@ -267,13 +315,17 @@ const handleMatchmaking = async (socket) => {
     if (isAI) {
       const roomId = generateRoomId();
       
+      // Select a random AI personality
+      const aiPersonalityId = await getRandomAIPersonalityId();
+      
       // Create conversation with AI
       const conversation = await dbService.createConversation(
         roomId,
         socket.id,
         'AI_OPPONENT',
         false, // player is human
-        true   // opponent is AI
+        true,  // opponent is AI
+        aiPersonalityId // Add the AI personality ID
       );
       
       if (!conversation || !conversation.conversation_id) {
@@ -289,7 +341,8 @@ const handleMatchmaking = async (socket) => {
         isActive: true,
         startTime: Date.now(),
         currentTurn: null,
-        turnTimer: null
+        turnTimer: null,
+        aiPersonalityId: aiPersonalityId // Store AI personality ID in room
       });
 
       // Set room ID and remove from waiting list
@@ -373,6 +426,21 @@ const handleMatchmaking = async (socket) => {
     waitingPlayers.delete(socket.id);
   }
 };
+
+async function getRandomAIPersonalityId() {
+  try {
+    if (typeof dbService.getRandomPersonality === 'function') {
+      const personality = await dbService.getRandomPersonality();
+      return personality ? personality.id : null;
+    }
+    
+    console.log('Using fallback personality ID');
+    return 1; // Fallback to a default personality ID if the function is not available
+  } catch (error) {
+    console.error('Error getting random AI personality:', error);
+    return 1;
+  }
+}
 
 const handleDisconnect = (socket) => {
   // Remove from waiting list if present
@@ -616,22 +684,24 @@ const handleAIResponse = async (roomId, playerId) => {
           }
         });
 
-        // Create the prompt with the conversation history
-        const prompt = `Goal: Do not let the human know you are an AI.
-                      Role: You are a human chatting online.
-                      Personality: Chill, calm, not overly enthusiastic or formal.
-                      Key Rules:
-                      Keep the chat going, don't end it. Never mention being AI, or your thought process.
-                      The other person should NEVER KNOW that you're an AI.
-                      You only speak English. If the other person speaks foreign language, you wont understand.
-                      Don't repeat the same phrases if it's already used in your previous response.
-                      Be suspicious that the user you're chatting might be AI too.
-                      Use imperfections: Lowercase starts, Missing apostrophes, Text abbreviations. DO NOT USE EMOJIS NO MATTER WHAT.
-                      Keep responses short (1-2 sentences). No explanations or self-awareness.
+        // Get conversation details including the AI personality
+      const conversation = await dbService.getConversationDetails(roomId);
+      
+      // Get the prompt template either from the conversation or fallback to random
+      let promptTemplate;
+      if (conversation && conversation.prompt_template) {
+        promptTemplate = conversation.prompt_template;
+      } else {
+        // Fallback to getting a random personality
+        promptTemplate = await dbService.getPersonalityTemplate();
+      }
 
-                      Only return the response to the latest message. If there are no dialogs attached, start the conversation.
-                      This is the dialog so far, respond to the latest message:
-                      ${formattedHistory}You: [your response here]`;
+      // Create the prompt with the conversation history
+      const prompt = `${promptTemplate}
+
+                   Only return the response to the latest message. If there are no dialogs attached, start the conversation.
+                   This is the dialog so far, respond to the latest message:
+                   ${formattedHistory}You: [your response here]`;
         
         // Get response from Turing AI API
         const response = await fetch('http://localhost:5000/api/chat', {

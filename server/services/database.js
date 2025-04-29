@@ -2,18 +2,61 @@ const db = require('../config/database');
 
 class DatabaseService {
   // Conversation methods
-  async createConversation(roomId, player1Id, player2Id, player1IsAI, player2IsAI) {
+  async createConversation(roomId, player1Id, player2Id, player1IsAI, player2IsAI, aiPersonalityId = null) {
     const query = `
-      INSERT INTO conversations (conversation_id, player1_id, player2_id, player1_is_ai, player2_is_ai)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING conversation_id, time_created
+      INSERT INTO conversations (
+        conversation_id, player1_id, player2_id, 
+        player1_is_ai, player2_is_ai, ai_personality_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING conversation_id
     `;
-    const values = [roomId, player1Id, player2Id, player1IsAI, player2IsAI];
+    const values = [roomId, player1Id, player2Id, player1IsAI, player2IsAI, aiPersonalityId];
     try {
       const result = await db.query(query, values);
       return result.rows[0];
     } catch (error) {
       console.error('Error creating conversation:', error);
+      throw error;
+    }
+  }
+
+  async getRandomPersonality() {
+    try {
+      const query = 'SELECT * FROM ai_personalities ORDER BY RANDOM() LIMIT 1';
+      const result = await db.query(query);
+      
+      if (result.rows.length > 0) {
+        return result.rows[0];
+      }
+      return null;
+    } catch (error) {
+      console.error('Error getting random AI personality:', error);
+      throw error;
+    }
+  }
+
+  async getConversationDetails(conversationId) {
+    try {
+      const query = `
+        SELECT 
+          c.*, 
+          p.name as personality_name, 
+          p.prompt_template
+        FROM conversations c
+        LEFT JOIN ai_personalities p ON c.ai_personality_id = p.id
+        WHERE c.conversation_id = $1
+      `;
+      
+      const result = await db.query(query, [conversationId]);
+      
+      if (result.rows.length > 0) {
+        return result.rows[0];
+      } else {
+        return null;
+      }
+    } catch (error) {
+      console.error('Error getting conversation details:', error);
       throw error;
     }
   }

@@ -327,6 +327,7 @@ function Chat() {
   const [inactivityTimer, setInactivityTimer] = useState(30);
   const [showInactivityTimer, setShowInactivityTimer] = useState(false);
   const inactivityTimerRef = useRef(null);
+  const [guessResultTimeout, setGuessResultTimeout] = useState(null);
 
   useEffect(() => {
     console.log('Chat component mounted with state:', { roomId, isAI, isFirstTurn });
@@ -396,11 +397,24 @@ function Chat() {
 
     const handleGuessResult = (data) => {
       console.log('Received guess result:', data);
+      
+      // Clear the fallback timeout if it exists
+      if (guessResultTimeout) {
+        clearTimeout(guessResultTimeout);
+        setGuessResultTimeout(null);
+      }
+      
+      // Update state
       setCanGuess(false);
       setCanSendMessage(false);
+      
+      // Update popup with the actual result
       setShowPopup(true);
       setPopupTitle("Guess Result!");
-      setPopupMessage(data.message);
+      setPopupMessage(data.message || `Your guess was ${data.isCorrect ? 'correct' : 'incorrect'}! Your opponent was actually ${data.actualType}.`);
+      
+      // Store the result
+      setGuessResult(data);
     };
 
     const handleGameOver = (data) => {
@@ -614,10 +628,24 @@ function Chat() {
       console.log('Cannot guess - canGuess is false');
       return;
     }
+    
     console.log('Sending guess:', { roomId, isAI });
-    wsService.send('MAKE_GUESS', { roomId, isAI });
+    
+    wsService.send('MAKE_GUESS', { 
+      roomId, 
+      isAI,
+      opponentDisconnected: isOpponentDisconnected
+    });
+    
     setCanGuess(false);
     setCanSendMessage(false);
+    
+    const guessResultTimeout = setTimeout(() => {
+      console.log('Guess result timeout - requesting result directly');
+      wsService.send('GET_GUESS_RESULT', { roomId, isAI });
+    }, 2000);
+    
+    setGuessResultTimeout(guessResultTimeout);
   };
 
   const handlePlayAgain = () => {
