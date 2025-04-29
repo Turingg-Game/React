@@ -181,7 +181,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('RETIRE', () => {
+  socket.on('RETIRE', (data) => {
     console.log(`Client ${socket.id} retiring`);
     if (socket.roomId && rooms.has(socket.roomId)) {
       const room = rooms.get(socket.roomId);
@@ -191,8 +191,11 @@ io.on('connection', (socket) => {
         console.log(`Notifying ${otherPlayer} that opponent retired`);
         // Notify other player that their opponent has retired
         io.to(otherPlayer).emit('OPPONENT_DISCONNECTED', { 
-          message: 'Your opponent has retired from the game. You can now make your guess about your opponent.',
-          canGuess: true
+          message: data.timeout 
+            ? 'Your opponent ran out of time to respond. You can now make your guess about your opponent.'
+            : 'Your opponent has retired from the game. You can now make your guess about your opponent.',
+          canGuess: true,
+          timeout: data.timeout
         });
         
         // Stop the room timer since the other player gets a chance to guess
@@ -210,18 +213,21 @@ io.on('connection', (socket) => {
       
       // Notify the retiring player that they can't make a guess
       socket.emit('GAME_OVER', {
-        message: 'You have retired from the game. You cannot make a guess.',
+        message: data.timeout
+          ? 'You ran out of time to respond. The game has ended.'
+          : 'You have retired from the game. You cannot make a guess.',
         canGuess: false
       });
       
       // Mark room as inactive
       room.isActive = false;
       
-      // Remove room after cleanup
-      setTimeout(() => {
-        rooms.delete(socket.roomId);
-        console.log(`Room ${socket.roomId} removed after retirement`);
-      }, 5000);
+      // Remove room immediately instead of waiting
+      rooms.delete(socket.roomId);
+      console.log(`Room ${socket.roomId} removed after ${data.timeout ? 'timeout' : 'retirement'}`);
+      
+      // Clear the roomId from the socket
+      socket.roomId = null;
     }
   });
 
@@ -238,13 +244,22 @@ const handleMatchmaking = async (socket) => {
     // Check if player is already in a room and if that room is still active
     if (socket.roomId) {
       const room = rooms.get(socket.roomId);
-      if (room && room.isActive) {
-        console.log(`Player ${socket.id} is already in active room ${socket.roomId}`);
-        return;
-      } else {
-        // If room doesn't exist or is inactive, clear the roomId
-        socket.roomId = null;
+      if (room) {
+        // Clean up the old room
+        room.isActive = false;
+        const otherPlayer = room.players.find(p => p !== socket.id);
+        if (otherPlayer) {
+          io.to(otherPlayer).emit('OPPONENT_DISCONNECTED', { 
+            message: 'Your opponent has left the game.',
+            canGuess: true
+          });
+        }
+        // Remove the room immediately
+        rooms.delete(socket.roomId);
+        console.log(`Cleaned up old room ${socket.roomId} for player ${socket.id}`);
       }
+      // Clear the roomId
+      socket.roomId = null;
     }
 
     // Check if player is already in waiting list

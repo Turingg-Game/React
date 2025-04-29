@@ -293,6 +293,18 @@ const OpponentStatus = styled.div`
   font-style: italic;
 `;
 
+const InactivityTimerBar = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: #2a2a2a;
+  transition: width 1s linear;
+  width: ${props => props.percentage}%;
+  background: ${props => props.isLowTime ? '#ff6b6b' : '#007bff'};
+`;
+
 function Chat() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -312,6 +324,9 @@ function Chat() {
   const [showRetireConfirm, setShowRetireConfirm] = useState(false);
   const [popupTitle, setPopupTitle] = useState('');
   const [popupMessage, setPopupMessage] = useState('');
+  const [inactivityTimer, setInactivityTimer] = useState(30);
+  const [showInactivityTimer, setShowInactivityTimer] = useState(false);
+  const inactivityTimerRef = useRef(null);
 
   useEffect(() => {
     console.log('Chat component mounted with state:', { roomId, isAI, isFirstTurn });
@@ -375,7 +390,7 @@ function Chat() {
       setIsOpponentDisconnected(true);
       setCanGuess(data.canGuess);
       setShowPopup(true);
-      setPopupTitle("Opponent Left");
+      setPopupTitle(data.timeout ? "Opponent Timed Out" : "Opponent Left");
       setPopupMessage(data.message);
     };
 
@@ -502,6 +517,48 @@ function Chat() {
     console.log('showPopup state changed:', showPopup);
   }, [showPopup]);
 
+  // Add inactivity timer effect
+  useEffect(() => {
+    if (canSendMessage) {
+      setShowInactivityTimer(true);
+      setInactivityTimer(30);
+      
+      // Clear any existing timer
+      if (inactivityTimerRef.current) {
+        clearInterval(inactivityTimerRef.current);
+      }
+
+      // Start new timer
+      inactivityTimerRef.current = setInterval(() => {
+        setInactivityTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(inactivityTimerRef.current);
+            // Instead of handleForfeit, we'll use handleRetire with a timeout message
+            setPopupTitle("Time's Up!");
+            setPopupMessage("You ran out of time to respond. The game has ended.");
+            setCanSendMessage(false);
+            setCanGuess(false);
+            setShowPopup(true);
+            wsService.send('RETIRE', { timeout: true });
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      return () => {
+        if (inactivityTimerRef.current) {
+          clearInterval(inactivityTimerRef.current);
+        }
+      };
+    } else {
+      setShowInactivityTimer(false);
+      if (inactivityTimerRef.current) {
+        clearInterval(inactivityTimerRef.current);
+      }
+    }
+  }, [canSendMessage]);
+
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -520,7 +577,7 @@ function Chat() {
   };
 
   const confirmRetire = () => {
-    wsService.send('RETIRE');
+    wsService.send('RETIRE', { timeout: false });
     setCanSendMessage(false);
     setCanGuess(false);
     setShowPopup(true);
@@ -596,36 +653,51 @@ function Chat() {
           )}
         </ChatArea>
 
-        <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(); }}>
-          <InputContainer>
-            <MessageInput
-              type="text"
-              value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
-              placeholder={
-                canSendMessage 
-                  ? "Type your message..." 
-                  : isFirstTurn 
-                    ? "Waiting for opponent to join..." 
-                    : "Waiting for opponent's turn..."
-              }
-              disabled={!canSendMessage}
+        <InputContainer>
+          {showInactivityTimer && (
+            <InactivityTimerBar 
+              percentage={(inactivityTimer / 30) * 100} 
+              isLowTime={inactivityTimer <= 10}
             />
-            <SendButton type="submit" disabled={!canSendMessage}>
-              Send
-            </SendButton>
-          </InputContainer>
-          {canSendMessage && (
-            <TurnTimer isLowTime={turnTimeLeft <= 5}>
-              Your turn: {turnTimeLeft}s
-            </TurnTimer>
           )}
-          {!canSendMessage && !isFirstTurn && (
-            <OpponentStatus>
-              Waiting for opponent to send their message...
-            </OpponentStatus>
-          )}
-        </form>
+          <MessageInput
+            type="text"
+            value={inputMessage}
+            onChange={(e) => setInputMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && canSendMessage) {
+                e.preventDefault();
+                handleSendMessage();
+              }
+            }}
+            placeholder={
+              canSendMessage 
+                ? "Type your message... (Press Enter to send)" 
+                : isFirstTurn 
+                  ? "Waiting for opponent to join..." 
+                  : "Waiting for opponent's turn..."
+            }
+            disabled={!canSendMessage}
+          />
+          <SendButton 
+            type="button" 
+            disabled={!canSendMessage} 
+            onClick={handleSendMessage}
+            title="Send message (Enter)"
+          >
+            Send
+          </SendButton>
+        </InputContainer>
+        {canSendMessage && (
+          <TurnTimer isLowTime={turnTimeLeft <= 5}>
+            Your turn: {turnTimeLeft}s
+          </TurnTimer>
+        )}
+        {!canSendMessage && !isFirstTurn && (
+          <OpponentStatus>
+            Waiting for opponent to send their message...
+          </OpponentStatus>
+        )}
 
         {showRetireConfirm && (
           <PopupOverlay>
